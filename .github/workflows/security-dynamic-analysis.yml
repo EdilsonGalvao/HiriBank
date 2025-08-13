@@ -1,0 +1,70 @@
+name: Perform DAST (Owasp ZAP) 
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    name: DAST
+    runs-on: ubuntu-latest
+    env:
+      TARGET_URL: http://localhost:9090/VulnerableApp
+      ZAP_IMG: ghcr.io/zaproxy/zaproxy:stable
+      VULN_IMG: sasanlabs/owasp-vulnerableapp:1.12.10
+      PORT: 9090:9090
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+
+      - name: DAST - Pull images
+        run: |
+          docker pull "${ZAP_IMG}"
+          docker pull "${VULN_IMG}"
+
+      - name: DAST - Start VulnerableApp
+        run: docker run -d --name vulnerableapp -p "${PORT}" "${VULN_IMG}"
+
+      - name: DAST - Wait for VulnerableApp
+        run: |
+          for i in {1..30}; do
+            if curl -sSf "${TARGET_URL}" > /dev/null; then
+              echo "App is up!"
+              exit 0
+            fi
+            echo "Waiting..."
+            sleep 5
+          done
+          echo "App did not start in time"
+          exit 1
+      
+      - name: DAST - Prepare writable folder for ZAP reports
+        run: |
+          mkdir -p zap
+          chmod 777 zap 
+          
+      - name: DAST - Run ZAP Baseline Scan
+        run: |
+          docker run --rm --network="host" -v "$PWD/zap:/zap/wrk:rw" "${ZAP_IMG}" zap-full-scan.py \
+            -t "${TARGET_URL}" \
+            -r "dast-report.html" \
+            -J "dast-report.json" \
+            -w "dast-warnings.md" \
+            -z "-config api.disablekey=true" \
+            -I
+
+      - name: DAST - Upload DAST reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: |
+            zap/dast-report.html
+            zap/dast-report.json
+            zap/dast-warnings.md

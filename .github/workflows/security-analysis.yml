@@ -1,0 +1,84 @@
+name: Perform SAST and SCA (Semgrep and DC)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    name: SAST and SCA
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-22.04
+    defaults:
+      run:
+        working-directory: .
+
+    env:
+      DC_VERSION: "12.1.3"
+      DC_INSTALL_DIR: ${{ github.workspace }}/tools/dependency-check
+      DC_DATA_DIR: ${{ github.workspace }}/.dc-data
+      DC_API_KEY: "${{secrets.DC_API_KEY}}"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: SAST - Semgrep Install
+        run: pip install semgrep
+
+      - name : SAST - Tool version
+        run: semgrep --version
+
+      - name: SAST - Run Semgrep
+        run: |
+          mkdir -p out
+          semgrep --config auto --json > out/semgrep-report.json
+
+      - name: SAST - Upload Semgrep Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+         name: semgrep-report
+         path: out/semgrep-report.json
+
+      - name: SCA - Install Dependency-Check
+        run: |
+            apt-get update && apt-get install -y openjdk-17-jre-headless wget unzip
+            wget https://github.com/dependency-check/DependencyCheck/releases/download/v${{ env.DC_VERSION }}/dependency-check-${{ env.DC_VERSION }}-release.zip
+            unzip dependency-check-${{ env.DC_VERSION }}-release.zip -d ../tools  
+
+      - name: SCA - DC Version
+        run: |
+          ../tools/dependency-check/bin/dependency-check.sh --version
+
+      - name : SCA - Purge DC Database IF EXIST
+        continue-on-error: true
+        run: | 
+          if [ -f ${{env.DC_DATA_DIR}}/odc.mv.db ]; then           
+            $DC_INSTALL_DIR/bin/dependency-check.sh --purge 
+          else
+            echo "Database not exist!"
+          fi       
+
+      - name: SCA - Rodar Dependency-Check
+        continue-on-error: true
+        run: |
+          ../tools/dependency-check/bin/dependency-check.sh \
+            --project "app" \
+            --scan . \
+            --format "HTML" \
+            --nvdApiKey ${{env.DC_API_KEY}} \
+            --data "${{ env.DC_DATA_DIR }}" \
+            --failOnCVSS 0 \
+            --out out
+
+      - name: SCA - Upload Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dc-security-reports
+
+          path: out/dependency-check-report.*
